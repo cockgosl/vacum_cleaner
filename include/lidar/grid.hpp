@@ -13,6 +13,11 @@ enum class CellState : std::uint8_t {
     Occupied
 };
 
+struct CellIndex {
+    std::size_t x;
+    std::size_t y;
+};
+
 class Grid {
 public:
     // Returns nullopt for invalid dimensions, resolution, or storage capacity.
@@ -22,6 +27,11 @@ public:
     std::size_t width() const noexcept;
     std::size_t height() const noexcept;
     double resolution() const noexcept; // Metres per cell.
+
+    // Metres from the bottom-left corner: x points right, y points up.
+    // The lower edges are included; the upper edges are excluded.
+    // Returns nullopt for non-finite coordinates or points outside the grid.
+    std::optional<CellIndex> world_to_cell(double x, double y) const;
 
     // Coordinates are cell indices: x is the column, y is the row.
     // Both operations throw std::out_of_range outside the grid.

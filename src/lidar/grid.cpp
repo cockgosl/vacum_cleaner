@@ -1,5 +1,6 @@
 #include "lidar/grid.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -29,6 +30,18 @@ std::size_t Grid::height() const noexcept {
 
 double Grid::resolution() const noexcept {
     return resolution_;
+}
+
+std::optional<CellIndex> Grid::world_to_cell(double x, double y) const {
+    if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0 || y < 0.0)
+        return std::nullopt;
+    if (x >= static_cast<double>(width_) * resolution_ || y >= static_cast<double>(height_) * resolution_)
+        return std::nullopt;
+
+    // Division may round an interior point up to the outer grid boundary.
+    const auto cell_x = std::min(std::floor(x / resolution_), static_cast<double>(width_ - 1));
+    const auto cell_y = std::min(std::floor(y / resolution_), static_cast<double>(height_ - 1));
+    return CellIndex{static_cast<std::size_t>(cell_x), static_cast<std::size_t>(cell_y)};
 }
 
 CellState Grid::at(std::size_t x, std::size_t y) const {
