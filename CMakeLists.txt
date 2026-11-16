@@ -9,6 +9,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(SRCS
     src/mapping/grid.cpp
     src/mapping/lidar.cpp
+    src/rooting/scheduler.cpp
+    src/cleaner/vacuum_cleaner.cpp
 )
 
 add_library(lidar_lib STATIC ${SRCS})
