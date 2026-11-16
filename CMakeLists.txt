@@ -19,3 +19,8 @@ if(BUILD_APP)
     add_executable(lidar.out src/main.cpp)
     target_link_libraries(lidar.out PRIVATE lidar_lib)
 endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
