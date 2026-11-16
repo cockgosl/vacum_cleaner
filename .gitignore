@@ -1,0 +1,23 @@
+# Build directories and compiled files.
+/build/
+/build-*/
+/cmake-build-*/
+*.o
+*.a
+*.so
+*.so.*
+*.out
+
+# Tool caches and generated compilation database.
+/.cache/
+/compile_commands.json
+
+# Local IDE settings and editor temporary files.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local project documents.
+*.docx
