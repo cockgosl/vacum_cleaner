@@ -8,6 +8,7 @@
 using cleaner::RobotSpecs;
 using cleaner::StepStatus;
 using cleaner::VacuumCleaner;
+using rooting::Direction;
 using rooting::PlanStatus;
 using Seconds = std::chrono::seconds;
 
@@ -37,13 +38,13 @@ TEST(VacuumCleanerTest, PlansOverObservedMapWithoutChangingIt) {
     ASSERT_TRUE(robot.has_value());
     ASSERT_TRUE(robot->update_ray(0.5, 1.5, 2.5, 1.5));
 
-    const auto step = robot->run_step({0, 1}, {1, 1}, Seconds{0});
+    const auto step = robot->run_step({{0, 1}, Direction::East}, {1, 1}, Seconds{0});
     EXPECT_EQ(step.status, StepStatus::Planned);
     ASSERT_TRUE(step.plan.has_value());
     EXPECT_EQ(step.plan->status, PlanStatus::Success);
     ASSERT_EQ(step.plan->path.size(), 2U);
-    EXPECT_EQ(step.plan->path.front().x, 0U);
-    EXPECT_EQ(step.plan->path.back().x, 1U);
+    EXPECT_EQ(step.plan->path.front().cell.x, 0U);
+    EXPECT_EQ(step.plan->path.back().cell.x, 1U);
     EXPECT_EQ(robot->grid().at(0, 1), lidar::CellState::Free);
     EXPECT_EQ(robot->grid().at(1, 1), lidar::CellState::Free);
     EXPECT_EQ(robot->grid().at(2, 1), lidar::CellState::Occupied);
@@ -53,7 +54,7 @@ TEST(VacuumCleanerTest, PlansOverObservedMapWithoutChangingIt) {
 TEST(VacuumCleanerTest, ReportsPlannerFailure) {
     const auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 4, 3, 1.0);
     ASSERT_TRUE(robot.has_value());
-    const auto step = robot->run_step({0, 1}, {1, 1}, Seconds{0});
+    const auto step = robot->run_step({{0, 1}, Direction::East}, {1, 1}, Seconds{0});
     EXPECT_EQ(step.status, StepStatus::PlanningFailed);
     ASSERT_TRUE(step.plan.has_value());
     EXPECT_EQ(step.plan->status, PlanStatus::InvalidStart);
@@ -64,9 +65,9 @@ TEST(VacuumCleanerTest, StopsAtOrAfterAutonomyLimit) {
     auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 4, 3, 1.0);
     ASSERT_TRUE(robot.has_value());
     ASSERT_TRUE(robot->update_ray(0.5, 1.5, 2.5, 1.5));
-    EXPECT_EQ(robot->run_step({0, 1}, {1, 1}, Seconds{59}).status, StepStatus::Planned);
+    EXPECT_EQ(robot->run_step({{0, 1}, Direction::East}, {1, 1}, Seconds{59}).status, StepStatus::Planned);
     for (const auto elapsed : {Seconds{60}, Seconds{61}}) {
-        const auto step = robot->run_step({0, 1}, {1, 1}, elapsed);
+        const auto step = robot->run_step({{0, 1}, Direction::East}, {1, 1}, elapsed);
         EXPECT_EQ(step.status, StepStatus::TimeLimitReached);
         EXPECT_FALSE(step.plan.has_value());
     }
@@ -75,7 +76,7 @@ TEST(VacuumCleanerTest, StopsAtOrAfterAutonomyLimit) {
 TEST(VacuumCleanerTest, RejectsNegativeElapsedTime) {
     const auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 4, 3, 1.0);
     ASSERT_TRUE(robot.has_value());
-    const auto step = robot->run_step({0, 1}, {1, 1}, Seconds{-1});
+    const auto step = robot->run_step({{0, 1}, Direction::East}, {1, 1}, Seconds{-1});
     EXPECT_EQ(step.status, StepStatus::InvalidElapsedTime);
     EXPECT_FALSE(step.plan.has_value());
 }
@@ -87,11 +88,26 @@ TEST(VacuumCleanerTest, PassesRobotRadiusToScheduler) {
     ASSERT_TRUE(large.has_value());
     ASSERT_TRUE(small->update_ray(0.5, 1.5, 2.5, 1.5));
     ASSERT_TRUE(large->update_ray(0.5, 1.5, 2.5, 1.5));
-    EXPECT_EQ(small->run_step({1, 1}, {1, 1}, Seconds{0}).status, StepStatus::Planned);
-    const auto step = large->run_step({1, 1}, {1, 1}, Seconds{0});
+    EXPECT_EQ(small->run_step({{1, 1}, Direction::East}, {1, 1}, Seconds{0}).status, StepStatus::Planned);
+    const auto step = large->run_step({{1, 1}, Direction::East}, {1, 1}, Seconds{0});
     EXPECT_EQ(step.status, StepStatus::PlanningFailed);
     ASSERT_TRUE(step.plan.has_value());
     EXPECT_EQ(step.plan->status, PlanStatus::InvalidStart);
+}
+
+
+TEST(VacuumCleanerTest, PassesInitialHeadingToScheduler) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 4, 3, 1.0);
+    ASSERT_TRUE(robot.has_value());
+    ASSERT_TRUE(robot->update_ray(0.5, 1.5, 2.5, 1.5));
+
+    const auto step = robot->run_step({{0, 1}, Direction::North}, {1, 1}, Seconds{0});
+    ASSERT_EQ(step.status, StepStatus::Planned);
+    ASSERT_TRUE(step.plan.has_value());
+    EXPECT_EQ(step.plan->cost, 2U);
+    ASSERT_EQ(step.plan->path.size(), 3U);
+    EXPECT_EQ(step.plan->path.front().direction, Direction::North);
+    EXPECT_EQ(step.plan->path.back().direction, Direction::East);
 }
 
 } // namespace

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <queue>
 #include <utility>
 
@@ -65,64 +66,100 @@ struct LaterEntry {
     }
 };
 
+constexpr std::size_t direction_count = 4;
+
+std::size_t state_index(Pose pose, std::size_t width) {
+    return (pose.cell.y * width + pose.cell.x) * direction_count + static_cast<std::size_t>(pose.direction);
+}
+
+Pose state_pose(std::size_t index, std::size_t width) {
+    const auto cell = index / direction_count;
+    return {{cell % width, cell / width}, static_cast<Direction>(index % direction_count)};
+}
+
+std::optional<lidar::CellIndex> forward_cell(Pose pose, const lidar::Grid& grid) {
+    auto cell = pose.cell;
+    switch (pose.direction) {
+    case Direction::East:
+        if (cell.x + 1 < grid.width())
+            return lidar::CellIndex{cell.x + 1, cell.y};
+        break;
+    case Direction::North:
+        if (cell.y + 1 < grid.height())
+            return lidar::CellIndex{cell.x, cell.y + 1};
+        break;
+    case Direction::West:
+        if (cell.x > 0)
+            return lidar::CellIndex{cell.x - 1, cell.y};
+        break;
+    case Direction::South:
+        if (cell.y > 0)
+            return lidar::CellIndex{cell.x, cell.y - 1};
+        break;
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
-PlanResult Scheduler::plan(const lidar::Grid& grid, lidar::CellIndex start, lidar::CellIndex goal, double radius) const {
+PlanResult Scheduler::plan(const lidar::Grid& grid, Pose start, lidar::CellIndex goal, double radius) const {
     if (!std::isfinite(radius) || radius <= 0.0)
         return {PlanStatus::InvalidParameters, {}};
     const long double cell_radius = static_cast<long double>(radius) / grid.resolution();
     if (!std::isfinite(cell_radius))
         return {PlanStatus::InvalidParameters, {}};
-    if (!inside(grid, start) || !can_traverse(grid, start, start, cell_radius))
+    if (static_cast<std::size_t>(start.direction) >= direction_count || !inside(grid, start.cell) ||
+        !can_traverse(grid, start.cell, start.cell, cell_radius))
         return {PlanStatus::InvalidStart, {}};
     if (!inside(grid, goal) || !can_traverse(grid, goal, goal, cell_radius))
         return {PlanStatus::InvalidGoal, {}};
 
     const auto width = grid.width();
-    const auto count = width * grid.height();
-    const auto start_index = start.y * width + start.x;
-    const auto goal_index = goal.y * width + goal.x;
+    const auto cells = width * grid.height();
+    if (cells > std::vector<std::size_t>{}.max_size() / direction_count)
+        return {PlanStatus::InvalidParameters, {}};
+    const auto count = cells * direction_count;
+    const auto start_index = state_index(start, width);
     constexpr auto unseen = std::numeric_limits<std::size_t>::max();
     std::vector<std::size_t> costs(count, unseen);
     std::vector<std::size_t> parents(count, unseen);
     std::priority_queue<Entry, std::vector<Entry>, LaterEntry> open;
     costs[start_index] = 0;
-    open.push({start_index, 0, heuristic(start, goal)});
+    open.push({start_index, 0, heuristic(start.cell, goal)});
 
     while (!open.empty()) {
         const auto current = open.top();
         open.pop();
         if (current.cost != costs[current.index])
             continue;
-        if (current.index == goal_index) {
-            std::vector<lidar::CellIndex> path;
-            for (auto index = goal_index;; index = parents[index]) {
-                path.push_back({index % width, index / width});
+        const auto pose = state_pose(current.index, width);
+        if (pose.cell.x == goal.x && pose.cell.y == goal.y) {
+            std::vector<Pose> path;
+            for (auto index = current.index;; index = parents[index]) {
+                path.push_back(state_pose(index, width));
                 if (index == start_index)
                     break;
             }
             std::reverse(path.begin(), path.end());
-            return {PlanStatus::Success, std::move(path)};
+            return {PlanStatus::Success, std::move(path), current.cost};
         }
 
-        const lidar::CellIndex cell{current.index % width, current.index / width};
-        const auto visit = [&](lidar::CellIndex next) {
-            const auto index = next.y * width + next.x;
+        const auto visit = [&](Pose next) {
+            const auto index = state_index(next, width);
             const auto cost = current.cost + 1;
-            if (cost >= costs[index] || !can_traverse(grid, cell, next, cell_radius))
+            if (cost >= costs[index])
                 return;
             costs[index] = cost;
             parents[index] = current.index;
-            open.push({index, cost, cost + heuristic(next, goal)});
+            open.push({index, cost, cost + heuristic(next.cell, goal)});
         };
-        if (cell.x > 0)
-            visit({cell.x - 1, cell.y});
-        if (cell.x + 1 < width)
-            visit({cell.x + 1, cell.y});
-        if (cell.y > 0)
-            visit({cell.x, cell.y - 1});
-        if (cell.y + 1 < grid.height())
-            visit({cell.x, cell.y + 1});
+
+        // A circular footprint occupies the same area during an in-place turn.
+        const auto direction = static_cast<std::size_t>(pose.direction);
+        visit({pose.cell, static_cast<Direction>((direction + 1) % direction_count)});
+        visit({pose.cell, static_cast<Direction>((direction + direction_count - 1) % direction_count)});
+        if (const auto next = forward_cell(pose, grid); next && can_traverse(grid, pose.cell, *next, cell_radius))
+            visit({*next, pose.direction});
     }
     return {PlanStatus::NoPath, {}};
 }

@@ -28,7 +28,7 @@ const RobotSpecs& VacuumCleaner::specs() const noexcept {
     return specs_;
 }
 
-StepResult VacuumCleaner::run_step(lidar::CellIndex start, lidar::CellIndex goal, std::chrono::seconds elapsed) const {
+StepResult VacuumCleaner::run_step(rooting::Pose start, lidar::CellIndex goal, std::chrono::seconds elapsed) const {
     if (elapsed.count() < 0)
         return {StepStatus::InvalidElapsedTime, std::nullopt};
     if (elapsed >= specs_.autonomy)

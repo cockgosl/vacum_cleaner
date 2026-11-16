@@ -37,7 +37,7 @@ public:
 
     // One planning tick, without movement or marking any area as cleaned.
     // The caller supplies elapsed time since the cleaning session started.
-    StepResult run_step(lidar::CellIndex start, lidar::CellIndex goal, std::chrono::seconds elapsed) const;
+    StepResult run_step(rooting::Pose start, lidar::CellIndex goal, std::chrono::seconds elapsed) const;
 
 private:
     VacuumCleaner(RobotSpecs specs, lidar::Lidar lidar);

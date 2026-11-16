@@ -2,6 +2,8 @@
 
 #include "mapping/grid.hpp"
 
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace rooting {
@@ -14,18 +16,34 @@ enum class PlanStatus {
     NoPath
 };
 
+// North is increasing y; enum order follows counterclockwise quarter-turns.
+enum class Direction : std::uint8_t {
+    East,
+    North,
+    West,
+    South
+};
+
+struct Pose {
+    lidar::CellIndex cell;
+    Direction direction;
+};
+
 struct PlanResult {
     PlanStatus status;
-    std::vector<lidar::CellIndex> path;
+    // Includes start and goal; a turn changes direction while keeping the cell.
+    std::vector<Pose> path;
+    std::size_t cost = 0; // One unit per forward move or 90-degree turn.
 };
 
 class Scheduler {
 public:
     // Positions are cell centres; radius is in metres and must be finite and positive.
-    // Uses four-neighbour A*. A successful path includes both start and goal.
+    // A* states include direction. Actions are forward, turn left, and turn right.
+    // Goal orientation is unrestricted; the heuristic ignores turn costs.
     // The circular footprint must avoid unknown/occupied cells and the map boundary.
     // Touching is treated as a collision. Consecutive positions are checked continuously.
-    PlanResult plan(const lidar::Grid& grid, lidar::CellIndex start, lidar::CellIndex goal, double radius) const;
+    PlanResult plan(const lidar::Grid& grid, Pose start, lidar::CellIndex goal, double radius) const;
 };
 
 } // namespace rooting
