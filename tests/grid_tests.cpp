@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include "lidar/grid.hpp"
+#include "mapping/grid.hpp"
 
 using lidar::CellState;
 using lidar::Grid;

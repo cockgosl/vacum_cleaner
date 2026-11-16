@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(SRCS
-    src/lidar/grid.cpp
+    src/mapping/grid.cpp
 )
 
 add_library(lidar_lib STATIC ${SRCS})

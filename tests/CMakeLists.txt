@@ -12,9 +12,10 @@ FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
 
-add_executable(grid_tests grid_tests.cpp)
-set_target_properties(grid_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
-target_link_libraries(grid_tests PRIVATE lidar_lib GTest::gtest_main)
-target_compile_options(grid_tests PRIVATE -Wall -Wextra -Wpedantic)
-
-gtest_discover_tests(grid_tests PROPERTIES TIMEOUT 10 LABELS "grid")
+foreach(object IN ITEMS grid ray_mapping)
+    add_executable(${object}_tests ${object}_tests.cpp)
+    set_target_properties(${object}_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
+    target_link_libraries(${object}_tests PRIVATE lidar_lib GTest::gtest_main)
+    target_compile_options(${object}_tests PRIVATE -Wall -Wextra -Wpedantic)
+    gtest_discover_tests(${object}_tests PROPERTIES TIMEOUT 10 LABELS "${object}")
+endforeach()
