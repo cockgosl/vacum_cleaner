@@ -16,11 +16,18 @@ set(SRCS
 add_library(lidar_lib STATIC ${SRCS})
 target_include_directories(lidar_lib PUBLIC "${PROJECT_SOURCE_DIR}/include")
 
+add_library(lidar_io STATIC src/io/stl_parser.cpp)
+target_include_directories(lidar_io PUBLIC "${PROJECT_SOURCE_DIR}/include")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(lidar_io PRIVATE src/io/serial_port.cpp)
+endif()
+
 option(BUILD_APP "Build the application" ON)
 
 if(BUILD_APP)
     add_executable(lidar.out src/main.cpp)
-    target_link_libraries(lidar.out PRIVATE lidar_lib)
+    target_link_libraries(lidar.out PRIVATE lidar_lib lidar_io)
 endif()
 
 include(CTest)
