@@ -1,6 +1,8 @@
 #include "mapping/lidar.hpp"
 
+#include <cmath>
 #include <limits>
+#include <numbers>
 #include <utility>
 
 namespace lidar {
@@ -14,6 +16,19 @@ std::optional<Lidar> Lidar::Create(std::size_t width, std::size_t height, double
 }
 
 Lidar::Lidar(Grid grid) : grid_(std::move(grid)) {}
+
+bool Lidar::update_measurement(const SensorPose& pose, double angle, double distance) {
+    if (!std::isfinite(pose.x) || !std::isfinite(pose.y) || !std::isfinite(pose.yaw) || !std::isfinite(angle) ||
+        !std::isfinite(distance) || distance <= 0.0)
+        return false;
+
+    // Reduce each angle before addition to avoid overflow for large finite angles.
+    constexpr double full_turn = 2.0 * std::numbers::pi;
+    const double direction = std::remainder(pose.yaw, full_turn) + std::remainder(angle, full_turn);
+    const double hit_x = pose.x + distance * std::cos(direction);
+    const double hit_y = pose.y + distance * std::sin(direction);
+    return update_ray(pose.x, pose.y, hit_x, hit_y);
+}
 
 const Grid& Lidar::grid() const noexcept {
     return grid_;
