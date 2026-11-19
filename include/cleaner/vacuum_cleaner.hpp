@@ -2,7 +2,7 @@
 
 #include "localization/scan_matcher.hpp"
 #include "mapping/lidar.hpp"
-#include "rooting/scheduler.hpp"
+#include "motion/controller.hpp"
 
 #include <chrono>
 #include <optional>
@@ -29,6 +29,12 @@ struct StepResult {
     std::optional<rooting::PlanResult> plan;
 };
 
+struct ControlStepResult {
+    // Absent when scan age prevents planning.
+    std::optional<StepResult> planning;
+    motion::ControlResult control;
+};
+
 enum class TrackingState {
     WaitingForScan,
     Tracking,
@@ -53,11 +59,12 @@ struct ScanResult {
 
 class VacuumCleaner {
 public:
-    // Validates specs, matcher options and initial pose, then creates the owned map.
+    // Validates specs, tracking and control options, and initial pose, then creates the owned map.
     // Defaults to the map centre with yaw=0. Explicit poses must lie inside the map.
     static std::optional<VacuumCleaner> Create(RobotSpecs specs, std::size_t width, std::size_t height, double resolution,
                                                std::optional<lidar::SensorPose> initial_pose = std::nullopt,
-                                               localization::MatcherOptions matcher_options = {});
+                                               localization::MatcherOptions matcher_options = {},
+                                               motion::ControllerOptions controller_options = {});
 
     // Manual ray updates are blocked after tracking is lost.
     bool update_ray(double start_x, double start_y, double hit_x, double hit_y);
@@ -85,13 +92,20 @@ public:
     // cardinal direction, with counterclockwise ties. Grid cost excludes the connector.
     StepResult run_step(lidar::CellIndex goal, std::chrono::seconds elapsed) const;
 
+    // scan_age is the time since the latest accepted scan was received.
+    // Call periodically even when no scans arrive so that commands expire.
+    ControlStepResult run_control_step(lidar::CellIndex goal, std::chrono::seconds elapsed,
+                                       std::chrono::milliseconds scan_age) const;
+
 private:
-    VacuumCleaner(RobotSpecs specs, lidar::Lidar lidar, localization::ScanMatcher matcher, lidar::SensorPose pose);
+    VacuumCleaner(RobotSpecs specs, lidar::Lidar lidar, localization::ScanMatcher matcher, motion::Controller controller,
+                  lidar::SensorPose pose);
 
     RobotSpecs specs_;
     rooting::Scheduler scheduler_;
     lidar::Lidar lidar_;
     localization::ScanMatcher matcher_;
+    motion::Controller controller_;
     lidar::SensorPose pose_;
     std::optional<io::Scan> reference_;
     TrackingState tracking_state_ = TrackingState::WaitingForScan;

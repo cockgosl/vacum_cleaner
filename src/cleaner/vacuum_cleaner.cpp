@@ -8,12 +8,14 @@ namespace cleaner {
 
 std::optional<VacuumCleaner> VacuumCleaner::Create(RobotSpecs specs, std::size_t width, std::size_t height, double resolution,
                                                    std::optional<lidar::SensorPose> initial_pose,
-                                                   localization::MatcherOptions matcher_options) {
+                                                   localization::MatcherOptions matcher_options,
+                                                   motion::ControllerOptions controller_options) {
     if (!std::isfinite(specs.radius) || specs.radius <= 0.0 || specs.autonomy.count() <= 0)
         return std::nullopt;
     auto lidar = lidar::Lidar::Create(width, height, resolution);
     auto matcher = localization::ScanMatcher::Create(matcher_options);
-    if (!lidar || !matcher)
+    auto controller = motion::Controller::Create(controller_options);
+    if (!lidar || !matcher || !controller)
         return std::nullopt;
     // Multiplying by 0.5 before resolution avoids an unnecessary overflow at the centre.
     auto pose = initial_pose.value_or(
@@ -21,11 +23,12 @@ std::optional<VacuumCleaner> VacuumCleaner::Create(RobotSpecs specs, std::size_t
     if (!std::isfinite(pose.yaw) || !lidar->grid().world_to_cell(pose.x, pose.y))
         return std::nullopt;
     pose.yaw = std::remainder(pose.yaw, 2.0 * std::numbers::pi);
-    return VacuumCleaner(specs, std::move(*lidar), std::move(*matcher), pose);
+    return VacuumCleaner(specs, std::move(*lidar), std::move(*matcher), std::move(*controller), pose);
 }
 
-VacuumCleaner::VacuumCleaner(RobotSpecs specs, lidar::Lidar lidar, localization::ScanMatcher matcher, lidar::SensorPose pose)
-    : specs_(specs), lidar_(std::move(lidar)), matcher_(std::move(matcher)), pose_(pose) {}
+VacuumCleaner::VacuumCleaner(RobotSpecs specs, lidar::Lidar lidar, localization::ScanMatcher matcher,
+                             motion::Controller controller, lidar::SensorPose pose)
+    : specs_(specs), lidar_(std::move(lidar)), matcher_(std::move(matcher)), controller_(std::move(controller)), pose_(pose) {}
 
 bool VacuumCleaner::update_ray(double start_x, double start_y, double hit_x, double hit_y) {
     if (tracking_state_ == TrackingState::TrackingLost)
@@ -126,6 +129,22 @@ StepResult VacuumCleaner::run_step(lidar::CellIndex goal, std::chrono::seconds e
     const int nearest = static_cast<int>(std::floor(pose_.yaw / (std::numbers::pi / 2.0) + 0.5));
     const auto direction = static_cast<rooting::Direction>((nearest + 4) % 4);
     return run_step(rooting::Pose{*cell, direction}, goal, elapsed);
+}
+
+ControlStepResult VacuumCleaner::run_control_step(lidar::CellIndex goal, std::chrono::seconds elapsed,
+                                                  std::chrono::milliseconds scan_age) const {
+    if (elapsed.count() < 0 || elapsed >= specs_.autonomy || tracking_state_ != TrackingState::Tracking)
+        return {run_step(goal, elapsed), {}};
+    if (scan_age.count() < 0)
+        return {std::nullopt, {motion::ControlStatus::InvalidInput}};
+    if (scan_age >= controller_.options().max_scan_age)
+        return {std::nullopt, {motion::ControlStatus::StaleScan}};
+
+    auto planning = run_step(goal, elapsed);
+    if (planning.status != StepStatus::Planned || !planning.plan)
+        return {std::move(planning), {}};
+    const auto control = controller_.compute(grid(), pose_, *planning.plan, specs_.radius, scan_age);
+    return {std::move(planning), control};
 }
 
 } // namespace cleaner

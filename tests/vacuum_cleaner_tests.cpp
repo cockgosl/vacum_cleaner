@@ -611,4 +611,66 @@ TEST(TrackedPlanningTest, UsesRobotRadiusWhenCheckingANarrowOpening) {
     }
 }
 
+void expect_stationary(const motion::ControlResult& result) {
+    EXPECT_EQ(result.command.linear_mps, 0.0);
+    EXPECT_EQ(result.command.angular_radps, 0.0);
+    EXPECT_EQ(result.wheels.left_mps, 0.0);
+    EXPECT_EQ(result.wheels.right_mps, 0.0);
+}
+
+TEST(ControlStepTest, IssuesCommandsOnlyWithFreshTrackingAndAValidRoute) {
+    using namespace std::chrono_literals;
+    auto robot = VacuumCleaner::Create({0.2, 60s}, 61, 61, 0.25);
+    ASSERT_TRUE(robot);
+    const lidar::CellIndex goal{38, 30};
+
+    const auto waiting = robot->run_control_step(goal, 0s, 0ms);
+    ASSERT_TRUE(waiting.planning);
+    EXPECT_EQ(waiting.planning->status, StepStatus::WaitingForScan);
+    expect_stationary(waiting.control);
+
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    const auto fresh = robot->run_control_step(goal, 1s, 499ms);
+    ASSERT_TRUE(fresh.planning);
+    EXPECT_EQ(fresh.planning->status, StepStatus::Planned);
+    EXPECT_EQ(fresh.control.status, motion::ControlStatus::Moving);
+    EXPECT_GT(fresh.control.wheels.left_mps, 0.0);
+    EXPECT_DOUBLE_EQ(fresh.control.wheels.left_mps, fresh.control.wheels.right_mps);
+
+    const auto stale = robot->run_control_step(goal, 1s, 500ms);
+    EXPECT_FALSE(stale.planning);
+    EXPECT_EQ(stale.control.status, motion::ControlStatus::StaleScan);
+    expect_stationary(stale.control);
+
+    planning_obstacle(*robot, goal);
+    const auto blocked = robot->run_control_step(goal, 1s, 0ms);
+    ASSERT_TRUE(blocked.planning);
+    EXPECT_EQ(blocked.planning->status, StepStatus::PlanningFailed);
+    expect_stationary(blocked.control);
+
+    const auto expired = robot->run_control_step(goal, 60s, 0ms);
+    ASSERT_TRUE(expired.planning);
+    EXPECT_EQ(expired.planning->status, StepStatus::TimeLimitReached);
+    expect_stationary(expired.control);
+}
+
+TEST(ControlStepTest, StopsAfterTrackingLossEvenWithARecentScan) {
+    using namespace std::chrono_literals;
+    motion::ControllerOptions options;
+    options.max_scan_age = 200ms;
+    auto robot = VacuumCleaner::Create({0.2, 60s}, 61, 61, 0.25, std::nullopt, {}, options);
+    ASSERT_TRUE(robot);
+    const lidar::CellIndex goal{38, 30};
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    EXPECT_EQ(robot->run_control_step(goal, 1s, 200ms).control.status, motion::ControlStatus::StaleScan);
+
+    ASSERT_EQ(robot->process_scan(io::Scan{}).status, cleaner::ScanStatus::TrackingLost);
+    const auto lost = robot->run_control_step(goal, 1s, 0ms);
+    ASSERT_TRUE(lost.planning);
+    EXPECT_EQ(lost.planning->status, StepStatus::TrackingLost);
+    expect_stationary(lost.control);
+}
+
 } // namespace
