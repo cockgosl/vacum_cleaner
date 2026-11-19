@@ -11,6 +11,7 @@ set(SRCS
     src/mapping/lidar.cpp
     src/rooting/scheduler.cpp
     src/cleaner/vacuum_cleaner.cpp
+    src/localization/scan_matcher.cpp
 )
 
 add_library(lidar_lib STATIC ${SRCS})
