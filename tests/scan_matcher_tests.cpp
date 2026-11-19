@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -329,6 +330,91 @@ TEST(ScanMatcherTest, EstimatesMotionFromRaycastRoomObservations) {
     expect_motion(matcher->match(room_scan({0.0, 0.0, 0.0}, 720), room_scan(expected, 720)), expected, 0.02, 0.01);
 }
 
+
+TEST(ScanMatcherTest, PureRoomTranslationsAreNotUnderestimated) {
+    const auto matcher = ScanMatcher::Create();
+    ASSERT_TRUE(matcher);
+    const auto reference = room_scan({0.0, 0.0, 0.0}, 720);
+    for (const auto expected : {RelativePose{0.06, 0.0, 0.0}, {-0.06, 0.0, 0.0}, {0.0, 0.06, 0.0}, {0.0, -0.06, 0.0}}) {
+        SCOPED_TRACE(::testing::Message() << "dx=" << expected.dx << ", dy=" << expected.dy);
+        expect_motion(matcher->match(reference, room_scan(expected, 720)), expected, 0.005, 0.002);
+    }
+}
+
+
+TEST(ScanMatcherTest, SparseLandmarksUseThePointMetric) {
+    const auto matcher = ScanMatcher::Create();
+    ASSERT_TRUE(matcher);
+    const auto result = matcher->match(scan_at(landmarks), scan_at(landmarks));
+    EXPECT_EQ(result.status, MatchStatus::Success);
+    EXPECT_EQ(result.metric, localization::MatchMetric::PointToPoint);
+}
+
+TEST(ScanMatcherTest, DenseRoomScansUseTheLineMetric) {
+    const auto matcher = ScanMatcher::Create();
+    ASSERT_TRUE(matcher);
+    const auto result = matcher->match(room_scan({0.0, 0.0, 0.0}, 720), room_scan({0.06, 0.0, 0.0}, 720));
+    expect_motion(result, {0.06, 0.0, 0.0}, 0.005, 0.002);
+    EXPECT_EQ(result.metric, localization::MatchMetric::PointToLine);
+}
+
+TEST(ScanMatcherTest, AccumulatesSuccessivePureRoomTranslationsWithoutSystematicUnderestimation) {
+    const auto matcher = ScanMatcher::Create();
+    ASSERT_TRUE(matcher);
+    auto previous = room_scan({0.0, 0.0, 0.0}, 720);
+    RelativePose accumulated{0.0, 0.0, 0.0};
+    for (const double x : {0.06, 0.12, 0.18}) {
+        auto current = room_scan({x, 0.0, 0.0}, 720);
+        const auto result = matcher->match(previous, current);
+        ASSERT_EQ(result.status, MatchStatus::Success);
+        ASSERT_TRUE(result.motion);
+        const double c = std::cos(accumulated.dyaw);
+        const double s = std::sin(accumulated.dyaw);
+        accumulated.dx += c * result.motion->dx - s * result.motion->dy;
+        accumulated.dy += s * result.motion->dx + c * result.motion->dy;
+        accumulated.dyaw += result.motion->dyaw;
+        previous = std::move(current);
+    }
+    EXPECT_NEAR(accumulated.dx, 0.18, 0.01);
+    EXPECT_NEAR(accumulated.dy, 0.0, 0.01);
+    EXPECT_NEAR(accumulated.dyaw, 0.0, 0.003);
+}
+
+TEST(ScanMatcherTest, RecoversPureTranslationWithSmallRangeNoise) {
+    const auto matcher = ScanMatcher::Create();
+    ASSERT_TRUE(matcher);
+    auto current = room_scan({0.06, 0.0, 0.0}, 720);
+    for (std::size_t i = 0; i < current.measurements.size(); ++i)
+        current.measurements[i].distance += 0.002 * std::sin(i * 1.7);
+    expect_motion(matcher->match(room_scan({0.0, 0.0, 0.0}, 720), current), {0.06, 0.0, 0.0}, 0.005, 0.002);
+}
+
+TEST(ScanMatcherTest, ParallelWallsCannotFakeAnObservableMotionEstimate) {
+    const auto matcher = ScanMatcher::Create();
+    ASSERT_TRUE(matcher);
+    std::vector<Point> walls;
+    for (int i = 0; i < 100; ++i) {
+        walls.push_back({-3.0 + i * 0.06, -2.0});
+        walls.push_back({-3.0 + i * 0.06, 2.0});
+    }
+    const auto scan = scan_at(walls);
+    const auto result = matcher->match(scan, scan);
+    EXPECT_EQ(result.metric, localization::MatchMetric::PointToLine);
+    EXPECT_EQ(result.status, MatchStatus::DegenerateGeometry);
+    EXPECT_FALSE(result.motion);
+}
+
+TEST(ScanMatcherTest, DoesNotFitLinesAcrossRepeatedDepthDiscontinuities) {
+    const auto matcher = ScanMatcher::Create();
+    ASSERT_TRUE(matcher);
+    io::Scan scan;
+    for (int i = 0; i < 40; ++i)
+        scan.measurements.push_back({-2.0 * std::numbers::pi * i / 40.0, i % 2 == 0 ? 2.0 : 4.0, 100});
+    const auto result = matcher->match(scan, scan);
+    EXPECT_EQ(result.status, MatchStatus::Success);
+    EXPECT_EQ(result.metric, localization::MatchMetric::PointToPoint);
+}
+
 TEST(ScanMatcherOptionsTest, AcceptsDefaultAndBoundaryOptions) {
     EXPECT_TRUE(ScanMatcher::Create());
     MatcherOptions options;
@@ -359,9 +445,9 @@ TEST(ScanMatcherOptionsTest, RejectsInvalidWorkBudgets) {
 }
 
 TEST(ScanMatcherOptionsTest, RejectsInvalidNumericThresholds) {
-    const std::array<double MatcherOptions::*, 5> fields{&MatcherOptions::max_pair_distance, &MatcherOptions::min_overlap,
-                                                         &MatcherOptions::max_rmse, &MatcherOptions::max_translation,
-                                                         &MatcherOptions::max_rotation};
+    const std::array<double MatcherOptions::*, 6> fields{&MatcherOptions::max_pair_distance, &MatcherOptions::min_overlap,
+                                                         &MatcherOptions::max_rmse,          &MatcherOptions::max_translation,
+                                                         &MatcherOptions::max_rotation,      &MatcherOptions::max_line_gap};
     for (const auto field : fields) {
         for (const double value : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
                                    -std::numeric_limits<double>::infinity()}) {

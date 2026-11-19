@@ -24,13 +24,19 @@ enum class MatchStatus {
     PoorFit
 };
 
+enum class MatchMetric {
+    PointToPoint,
+    PointToLine
+};
+
 struct MatchResult {
     MatchStatus status;
     // Present only for Success. It transforms current-frame points into the previous frame.
     std::optional<RelativePose> motion;
-    double rmse = std::numeric_limits<double>::infinity(); // Metres; infinity when there are no pairs.
+    double rmse = std::numeric_limits<double>::infinity(); // RMSE of the active metric, in metres; infinity without pairs.
     std::size_t correspondences = 0;
     std::size_t iterations = 0;
+    MatchMetric metric = MatchMetric::PointToPoint;
 };
 
 struct MatcherOptions {
@@ -42,6 +48,7 @@ struct MatcherOptions {
     double max_rmse = 0.06;         // Metres; final fit threshold.
     double max_translation = 0.5;   // Metres per scan pair.
     double max_rotation = 0.35;     // Radians per scan pair.
+    double max_line_gap = 0.5;      // Metres; largest allowed gap between neighbouring line samples.
 };
 
 class ScanMatcher {
@@ -51,7 +58,9 @@ public:
     // and max_rotation <= pi. Returns nullopt for invalid options.
     static std::optional<ScanMatcher> Create(MatcherOptions options = {});
 
-    // Stateless point-to-point 2D ICP, initialized with zero relative motion.
+    // Stateless 2D ICP, initialized with zero relative motion. Dense planar samples
+    // use point-to-line residuals; sparse landmarks use point-to-point matching.
+    // Line matching rejects unobservable motion instead of falling back to point fits.
     // Filters zero, negative and non-finite distances and non-finite angles.
     // Samples valid returns evenly in arrival order, using at most max_points per cloud.
     // Neither input scan is changed. Matching assumes small motion and a mostly static scene.
