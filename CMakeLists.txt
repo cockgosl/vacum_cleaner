@@ -16,7 +16,10 @@ set(SRCS
 add_library(lidar_lib STATIC ${SRCS})
 target_include_directories(lidar_lib PUBLIC "${PROJECT_SOURCE_DIR}/include")
 
-add_library(lidar_io STATIC src/io/stl_parser.cpp)
+add_library(lidar_io STATIC
+    src/io/stl_parser.cpp
+    src/io/scan_assembler.cpp
+)
 target_include_directories(lidar_io PUBLIC "${PROJECT_SOURCE_DIR}/include")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

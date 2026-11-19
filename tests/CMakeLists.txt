@@ -20,7 +20,7 @@ foreach(object IN ITEMS grid ray_mapping measurement scheduler vacuum_cleaner)
     gtest_discover_tests(${object}_tests PROPERTIES TIMEOUT 10 LABELS "${object}")
 endforeach()
 
-set(IO_TESTS stl_parser)
+set(IO_TESTS stl_parser scan_assembler)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND IO_TESTS serial_port)
 endif()
