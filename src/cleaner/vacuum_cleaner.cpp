@@ -102,4 +102,30 @@ StepResult VacuumCleaner::run_step(rooting::Pose start, lidar::CellIndex goal, s
     return {status, std::move(plan)};
 }
 
+
+StepResult VacuumCleaner::run_step(lidar::CellIndex goal, std::chrono::seconds elapsed) const {
+    if (elapsed.count() < 0)
+        return {StepStatus::InvalidElapsedTime, std::nullopt};
+    if (elapsed >= specs_.autonomy)
+        return {StepStatus::TimeLimitReached, std::nullopt};
+    if (tracking_state_ == TrackingState::TrackingLost)
+        return {StepStatus::TrackingLost, std::nullopt};
+    if (tracking_state_ != TrackingState::Tracking)
+        return {StepStatus::WaitingForScan, std::nullopt};
+
+    const auto& map = lidar_.grid();
+    const auto cell = map.world_to_cell(pose_.x, pose_.y);
+    if (!cell)
+        return {StepStatus::PlanningFailed, rooting::PlanResult{rooting::PlanStatus::InvalidStart, {}}};
+    const double centre_x = (static_cast<double>(cell->x) + 0.5) * map.resolution();
+    const double centre_y = (static_cast<double>(cell->y) + 0.5) * map.resolution();
+    if (!scheduler_.can_move(map, pose_.x, pose_.y, centre_x, centre_y, specs_.radius))
+        return {StepStatus::PlanningFailed, rooting::PlanResult{rooting::PlanStatus::InvalidStart, {}}};
+
+    // pose_.yaw is normalized; the resulting index lies in [-2, 2].
+    const int nearest = static_cast<int>(std::floor(pose_.yaw / (std::numbers::pi / 2.0) + 0.5));
+    const auto direction = static_cast<rooting::Direction>((nearest + 4) % 4);
+    return run_step(rooting::Pose{*cell, direction}, goal, elapsed);
+}
+
 } // namespace cleaner

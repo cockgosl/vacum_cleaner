@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <limits>
 #include <vector>
@@ -212,6 +213,103 @@ TEST(SchedulerTest, RejectsInvalidHeading) {
     EXPECT_EQ(result.status, PlanStatus::InvalidStart);
     EXPECT_TRUE(result.path.empty());
     EXPECT_EQ(result.cost, 0U);
+}
+
+
+TEST(ContinuousMotionTest, AllowsClearDiagonalSegmentsInBothDirections) {
+    const auto grid = free_grid(7, 7);
+    EXPECT_TRUE(Scheduler{}.can_move(grid, 1.25, 1.75, 4.5, 5.0, 0.2));
+    EXPECT_TRUE(Scheduler{}.can_move(grid, 4.5, 5.0, 1.25, 1.75, 0.2));
+}
+
+TEST(ContinuousMotionTest, DetectsAnObstacleBetweenSafeEndpoints) {
+    auto grid = free_grid(7, 7);
+    grid.set(3, 3, CellState::Occupied);
+    const Scheduler scheduler;
+    ASSERT_TRUE(scheduler.can_move(grid, 1.5, 1.5, 1.5, 1.5, 0.1));
+    ASSERT_TRUE(scheduler.can_move(grid, 5.5, 5.5, 5.5, 5.5, 0.1));
+    EXPECT_FALSE(scheduler.can_move(grid, 1.5, 1.5, 5.5, 5.5, 0.1));
+}
+
+TEST(ContinuousMotionTest, ChecksRoundedCornerClearanceInsteadOfOnlyBoundingBoxes) {
+    auto grid = free_grid(7, 7);
+    grid.set(3, 3, CellState::Occupied);
+    // The segment lies on x+y=5.5, at sqrt(0.125) from the corner (3,3).
+    EXPECT_TRUE(Scheduler{}.can_move(grid, 2.0, 3.5, 3.5, 2.0, 0.35));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 2.0, 3.5, 3.5, 2.0, 0.36));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 3.5, 2.0, 2.0, 3.5, 0.36));
+}
+
+TEST(ContinuousMotionTest, TreatsSideTangencyAsCollision) {
+    auto grid = free_grid(7, 7);
+    grid.set(3, 3, CellState::Occupied);
+    EXPECT_TRUE(Scheduler{}.can_move(grid, 1.5, 2.5, 5.5, 2.5, 0.49));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 1.5, 2.5, 5.5, 2.5, 0.5));
+}
+
+TEST(ContinuousMotionTest, ChecksTheActualFootprintAwayFromTheCellCentre) {
+    auto grid = free_grid(7, 7);
+    grid.set(3, 2, CellState::Occupied);
+    EXPECT_TRUE(Scheduler{}.can_move(grid, 2.5, 2.5, 2.5, 2.5, 0.2));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 2.9, 2.5, 2.5, 2.5, 0.2));
+}
+
+TEST(ContinuousMotionTest, HandlesZeroLengthSegments) {
+    auto grid = free_grid(7, 7);
+    grid.set(3, 2, CellState::Occupied);
+    EXPECT_TRUE(Scheduler{}.can_move(grid, 2.75, 2.5, 2.75, 2.5, 0.24));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 2.75, 2.5, 2.75, 2.5, 0.25));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 3.5, 2.5, 3.5, 2.5, 0.1));
+}
+
+TEST(ContinuousMotionTest, UnknownCellsBlockTheSweptFootprint) {
+    auto grid = free_grid(7, 7);
+    grid.set(3, 3, CellState::Unknown);
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 2.5, 2.5, 4.5, 4.5, 0.1));
+}
+
+TEST(ContinuousMotionTest, RejectsTouchingAndOutsideMapFootprints) {
+    const auto grid = free_grid(5, 5);
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 0.5, 2.5, 2.5, 2.5, 0.5));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 2.5, 2.5, 4.5, 2.5, 0.5));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, -0.1, 2.5, 2.5, 2.5, 0.1));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 2.5, 2.5, 5.1, 2.5, 0.1));
+    EXPECT_TRUE(Scheduler{}.can_move(grid, 0.75, 2.5, 2.5, 2.5, 0.5));
+}
+
+TEST(ContinuousMotionTest, ConvertsWorldCoordinatesAndRadiusFromMetres) {
+    auto grid = free_grid(10, 10, 0.25);
+    EXPECT_TRUE(Scheduler{}.can_move(grid, 0.625, 0.625, 1.125, 1.125, 0.05));
+    grid.set(3, 3, CellState::Occupied);
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 0.625, 0.625, 1.125, 1.125, 0.05));
+}
+
+TEST(ContinuousMotionTest, RejectsInvalidNumbersAndNonPositiveRadius) {
+    const auto grid = free_grid(7, 7);
+    for (const double invalid : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+                                 -std::numeric_limits<double>::infinity()}) {
+        EXPECT_FALSE(Scheduler{}.can_move(grid, invalid, 1.5, 4.5, 4.5, 0.2));
+        EXPECT_FALSE(Scheduler{}.can_move(grid, 1.5, invalid, 4.5, 4.5, 0.2));
+        EXPECT_FALSE(Scheduler{}.can_move(grid, 1.5, 1.5, invalid, 4.5, 0.2));
+        EXPECT_FALSE(Scheduler{}.can_move(grid, 1.5, 1.5, 4.5, invalid, 0.2));
+        EXPECT_FALSE(Scheduler{}.can_move(grid, 1.5, 1.5, 4.5, 4.5, invalid));
+    }
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 1.5, 1.5, 4.5, 4.5, 0.0));
+    EXPECT_FALSE(Scheduler{}.can_move(grid, 1.5, 1.5, 4.5, 4.5, -0.2));
+}
+
+TEST(ContinuousMotionTest, AcceptsEverySegmentOfAReturnedGridRoute) {
+    auto grid = free_grid(7, 7);
+    for (std::size_t y = 0; y < 5; ++y)
+        grid.set(3, y, CellState::Occupied);
+    const Scheduler scheduler;
+    const auto route = scheduler.plan(grid, {{1, 2}, Direction::East}, {5, 2}, 0.2);
+    ASSERT_EQ(route.status, PlanStatus::Success);
+    for (std::size_t i = 1; i < route.path.size(); ++i) {
+        const auto from = route.path[i - 1].cell;
+        const auto to = route.path[i].cell;
+        EXPECT_TRUE(scheduler.can_move(grid, from.x + 0.5, from.y + 0.5, to.x + 0.5, to.y + 0.5, 0.2));
+    }
 }
 
 } // namespace

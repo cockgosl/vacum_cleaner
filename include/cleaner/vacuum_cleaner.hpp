@@ -19,12 +19,13 @@ enum class StepStatus {
     PlanningFailed,
     TimeLimitReached,
     InvalidElapsedTime,
-    TrackingLost
+    TrackingLost,
+    WaitingForScan
 };
 
 struct StepResult {
     StepStatus status;
-    // Present only when the scheduler was called; includes its failure reason.
+    // Present when planning was attempted; includes endpoint or search failure reasons.
     std::optional<rooting::PlanResult> plan;
 };
 
@@ -77,6 +78,12 @@ public:
     // One planning tick, without movement or marking any area as cleaned.
     // The caller supplies elapsed time since the cleaning session started.
     StepResult run_step(rooting::Pose start, lidar::CellIndex goal, std::chrono::seconds elapsed) const;
+
+    // Plans from the accepted tracked pose to the centre of a fixed goal cell.
+    // Requires Tracking; validates the swept footprint from the actual position
+    // to the first cell centre before searching. Heading is rounded to the nearest
+    // cardinal direction, with counterclockwise ties. Grid cost excludes the connector.
+    StepResult run_step(lidar::CellIndex goal, std::chrono::seconds elapsed) const;
 
 private:
     VacuumCleaner(RobotSpecs specs, lidar::Lidar lidar, localization::ScanMatcher matcher, lidar::SensorPose pose);

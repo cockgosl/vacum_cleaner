@@ -369,4 +369,246 @@ TEST(ScanTrackingTest, DoesNotDrawAChangedSceneWhenMatchingFails) {
     expect_pose(robot->pose(), {7.625, 7.625, 0.0});
 }
 
+
+void known_planning_map(VacuumCleaner& robot) {
+    // Build a known planning map independently of the sparse localization landmarks.
+    const auto& grid = robot.grid();
+    const double resolution = grid.resolution();
+    for (std::size_t y = 0; y < grid.height(); ++y) {
+        const double centre_y = (y + 0.5) * resolution;
+        ASSERT_TRUE(robot.update_ray(0.5 * resolution, centre_y, (grid.width() - 0.5) * resolution, centre_y));
+    }
+}
+
+void planning_obstacle(VacuumCleaner& robot, lidar::CellIndex cell) {
+    const double x = (cell.x + 0.5) * robot.grid().resolution();
+    const double y = (cell.y + 0.5) * robot.grid().resolution();
+    ASSERT_TRUE(robot.update_ray(x, y, x, y));
+}
+
+TEST(TrackedPlanningTest, WaitsForTrackingEvenWhenAManualMapIsAvailable) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25);
+    ASSERT_TRUE(robot);
+    known_planning_map(*robot);
+    const auto waiting = robot->run_step(lidar::CellIndex{30, 30}, Seconds{0});
+    EXPECT_EQ(waiting.status, StepStatus::WaitingForScan);
+    EXPECT_FALSE(waiting.plan);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    const auto planned = robot->run_step(lidar::CellIndex{30, 30}, Seconds{0});
+    EXPECT_EQ(planned.status, StepStatus::Planned);
+}
+
+TEST(TrackedPlanningTest, UsesTheUpdatedStartAndKeepsTheGoalFixed) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25, lidar::SensorPose{7.74, 7.625, 0.0});
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    const lidar::CellIndex goal{38, 30};
+    const auto first = robot->run_step(goal, Seconds{0});
+    ASSERT_EQ(first.status, StepStatus::Planned);
+    ASSERT_TRUE(first.plan);
+    ASSERT_FALSE(first.plan->path.empty());
+    EXPECT_EQ(first.plan->path.front().cell.x, 30U);
+
+    ASSERT_EQ(robot->process_scan(mapping_scan_at({0.06, 0.0, 0.0})).status, cleaner::ScanStatus::Updated);
+    known_planning_map(*robot);
+    const auto second = robot->run_step(goal, Seconds{1});
+    ASSERT_EQ(second.status, StepStatus::Planned);
+    ASSERT_TRUE(second.plan);
+    ASSERT_FALSE(second.plan->path.empty());
+    EXPECT_EQ(second.plan->path.front().cell.x, 31U);
+    EXPECT_EQ(second.plan->path.front().cell.y, 30U);
+    EXPECT_EQ(second.plan->path.back().cell.x, goal.x);
+    EXPECT_EQ(second.plan->path.back().cell.y, goal.y);
+}
+
+TEST(TrackedPlanningTest, RoundsHeadingToTheNearestCardinalDirectionWithCounterclockwiseTies) {
+    struct Case {
+        double yaw;
+        Direction direction;
+    };
+    const double pi = std::numbers::pi;
+    const std::array<Case, 13> cases{{{0.0, Direction::East},
+                                      {pi / 4 - 1e-6, Direction::East},
+                                      {pi / 4, Direction::North},
+                                      {pi / 4 + 1e-6, Direction::North},
+                                      {pi / 2, Direction::North},
+                                      {3 * pi / 4 + 1e-6, Direction::West},
+                                      {pi, Direction::West},
+                                      {-pi, Direction::West},
+                                      {-3 * pi / 4 + 1e-6, Direction::South},
+                                      {-pi / 2, Direction::South},
+                                      {-pi / 4 - 1e-6, Direction::South},
+                                      {-pi / 4, Direction::East},
+                                      {-pi / 4 + 1e-6, Direction::East}}};
+    for (const auto test : cases) {
+        SCOPED_TRACE(test.yaw);
+        auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25, lidar::SensorPose{7.625, 7.625, test.yaw});
+        ASSERT_TRUE(robot);
+        ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+        known_planning_map(*robot);
+        const auto result = robot->run_step(lidar::CellIndex{30, 30}, Seconds{0});
+        ASSERT_EQ(result.status, StepStatus::Planned);
+        ASSERT_TRUE(result.plan);
+        ASSERT_FALSE(result.plan->path.empty());
+        EXPECT_EQ(result.plan->path.front().direction, test.direction);
+    }
+}
+
+TEST(TrackedPlanningTest, ReplansAroundANewObstacle) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25);
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    const lidar::CellIndex goal{38, 30};
+    const auto initial = robot->run_step(goal, Seconds{0});
+    ASSERT_EQ(initial.status, StepStatus::Planned);
+    ASSERT_TRUE(initial.plan);
+    const auto contains = [](const auto& path, lidar::CellIndex cell) {
+        return std::any_of(path.begin(), path.end(),
+                           [&](const auto& pose) { return pose.cell.x == cell.x && pose.cell.y == cell.y; });
+    };
+    ASSERT_TRUE(contains(initial.plan->path, {34, 30}));
+    planning_obstacle(*robot, {34, 30});
+    const auto updated = robot->run_step(goal, Seconds{1});
+    ASSERT_EQ(updated.status, StepStatus::Planned);
+    ASSERT_TRUE(updated.plan);
+    EXPECT_FALSE(contains(updated.plan->path, {34, 30}));
+    EXPECT_GT(updated.plan->cost, initial.plan->cost);
+}
+
+TEST(TrackedPlanningTest, ReplacesASuccessfulRouteWithAnInvalidGoalResult) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25);
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    const lidar::CellIndex goal{38, 30};
+    ASSERT_EQ(robot->run_step(goal, Seconds{0}).status, StepStatus::Planned);
+    planning_obstacle(*robot, goal);
+    for (const auto target : {goal, lidar::CellIndex{61, 30}}) {
+        const auto result = robot->run_step(target, Seconds{1});
+        EXPECT_EQ(result.status, StepStatus::PlanningFailed);
+        ASSERT_TRUE(result.plan);
+        EXPECT_EQ(result.plan->status, PlanStatus::InvalidGoal);
+        EXPECT_TRUE(result.plan->path.empty());
+    }
+}
+
+TEST(TrackedPlanningTest, RefusesToPlanToAnUnknownGoal) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25);
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    for (std::size_t y = 29; y <= 31; ++y)
+        ASSERT_TRUE(robot->update_ray(7.375, (y + 0.5) * 0.25, 8.125, (y + 0.5) * 0.25));
+    ASSERT_EQ(robot->grid().at(55, 55), lidar::CellState::Unknown);
+    const auto result = robot->run_step(lidar::CellIndex{55, 55}, Seconds{0});
+    EXPECT_EQ(result.status, StepStatus::PlanningFailed);
+    ASSERT_TRUE(result.plan);
+    EXPECT_EQ(result.plan->status, PlanStatus::InvalidGoal);
+    EXPECT_TRUE(result.plan->path.empty());
+}
+
+TEST(TrackedPlanningTest, ReportsNoPathAfterACompleteWallAppears) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25);
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    ASSERT_EQ(robot->run_step(lidar::CellIndex{38, 30}, Seconds{0}).status, StepStatus::Planned);
+    for (std::size_t y = 0; y < robot->grid().height(); ++y)
+        planning_obstacle(*robot, {34, y});
+    const auto result = robot->run_step(lidar::CellIndex{38, 30}, Seconds{1});
+    EXPECT_EQ(result.status, StepStatus::PlanningFailed);
+    ASSERT_TRUE(result.plan);
+    EXPECT_EQ(result.plan->status, PlanStatus::NoPath);
+    EXPECT_TRUE(result.plan->path.empty());
+}
+
+TEST(TrackedPlanningTest, RejectsActualFootprintCollisionEvenWhenTheCellCentreHasAPath) {
+    auto robot = VacuumCleaner::Create({0.1, Seconds{60}}, 61, 61, 0.25, lidar::SensorPose{7.74, 7.625, 0.0});
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    planning_obstacle(*robot, {31, 30});
+    const lidar::CellIndex goal{34, 30};
+    ASSERT_EQ(robot->run_step({{30, 30}, Direction::East}, goal, Seconds{0}).status, StepStatus::Planned);
+    const auto result = robot->run_step(goal, Seconds{0});
+    EXPECT_EQ(result.status, StepStatus::PlanningFailed);
+    ASSERT_TRUE(result.plan);
+    EXPECT_EQ(result.plan->status, PlanStatus::InvalidStart);
+    EXPECT_TRUE(result.plan->path.empty());
+}
+
+TEST(TrackedPlanningTest, ChecksTheEntireConnectorEvenWhenBothEndpointFootprintsAreClear) {
+    constexpr double radius = 0.1725;
+    auto robot = VacuumCleaner::Create({radius, Seconds{60}}, 61, 61, 0.25, lidar::SensorPose{7.7475, 7.55, 0.0});
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    planning_obstacle(*robot, {31, 31});
+    const rooting::Scheduler scheduler;
+    const auto& grid = robot->grid();
+    ASSERT_TRUE(scheduler.can_move(grid, 7.7475, 7.55, 7.7475, 7.55, radius));
+    ASSERT_TRUE(scheduler.can_move(grid, 7.625, 7.625, 7.625, 7.625, radius));
+    const auto result = robot->run_step(lidar::CellIndex{30, 30}, Seconds{0});
+    EXPECT_EQ(result.status, StepStatus::PlanningFailed);
+    ASSERT_TRUE(result.plan);
+    EXPECT_EQ(result.plan->status, PlanStatus::InvalidStart);
+}
+
+TEST(TrackedPlanningTest, RemovesTheRouteAfterTrackingIsLost) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25);
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    ASSERT_EQ(robot->run_step(lidar::CellIndex{38, 30}, Seconds{0}).status, StepStatus::Planned);
+    ASSERT_EQ(robot->process_scan({}).status, cleaner::ScanStatus::TrackingLost);
+    const auto lost = robot->run_step(lidar::CellIndex{38, 30}, Seconds{1});
+    EXPECT_EQ(lost.status, StepStatus::TrackingLost);
+    EXPECT_FALSE(lost.plan);
+}
+
+TEST(TrackedPlanningTest, ValidatesElapsedTimeAndHonoursAutonomy) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25);
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    const auto invalid = robot->run_step(lidar::CellIndex{38, 30}, Seconds{-1});
+    EXPECT_EQ(invalid.status, StepStatus::InvalidElapsedTime);
+    EXPECT_FALSE(invalid.plan);
+    for (const auto elapsed : {Seconds{60}, Seconds{61}}) {
+        const auto expired = robot->run_step(lidar::CellIndex{38, 30}, elapsed);
+        EXPECT_EQ(expired.status, StepStatus::TimeLimitReached);
+        EXPECT_FALSE(expired.plan);
+    }
+}
+
+TEST(TrackedPlanningTest, AlreadyAtTheGoalCellReturnsOneGridPose) {
+    auto robot = VacuumCleaner::Create({0.2, Seconds{60}}, 61, 61, 0.25);
+    ASSERT_TRUE(robot);
+    ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+    known_planning_map(*robot);
+    const auto result = robot->run_step(lidar::CellIndex{30, 30}, Seconds{0});
+    ASSERT_EQ(result.status, StepStatus::Planned);
+    ASSERT_TRUE(result.plan);
+    EXPECT_EQ(result.plan->cost, 0U);
+    ASSERT_EQ(result.plan->path.size(), 1U);
+    EXPECT_EQ(result.plan->path[0].cell.x, 30U);
+    EXPECT_EQ(result.plan->path[0].cell.y, 30U);
+}
+
+TEST(TrackedPlanningTest, UsesRobotRadiusWhenCheckingANarrowOpening) {
+    for (const double radius : {0.1, 0.15}) {
+        auto robot = VacuumCleaner::Create({radius, Seconds{60}}, 61, 61, 0.25);
+        ASSERT_TRUE(robot);
+        ASSERT_EQ(robot->process_scan(mapping_scan_at()).status, cleaner::ScanStatus::Initialized);
+        known_planning_map(*robot);
+        for (std::size_t y = 0; y < robot->grid().height(); ++y)
+            if (y != 30)
+                planning_obstacle(*robot, {34, y});
+        const auto result = robot->run_step(lidar::CellIndex{38, 30}, Seconds{0});
+        ASSERT_TRUE(result.plan);
+        EXPECT_EQ(result.plan->status, radius < 0.125 ? PlanStatus::Success : PlanStatus::NoPath);
+    }
+}
+
 } // namespace

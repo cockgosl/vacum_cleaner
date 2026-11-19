@@ -44,6 +44,11 @@ public:
     // The circular footprint must avoid unknown/occupied cells and the map boundary.
     // Touching is treated as a collision. Consecutive positions are checked continuously.
     PlanResult plan(const lidar::Grid& grid, Pose start, lidar::CellIndex goal, double radius) const;
+
+    // Tests a straight swept circular footprint between world coordinates in metres.
+    // Both endpoint footprints and the entire segment must avoid unknown/occupied
+    // cells and the map boundary. Touching is a collision; invalid inputs return false.
+    bool can_move(const lidar::Grid& grid, double from_x, double from_y, double to_x, double to_y, double radius) const;
 };
 
 } // namespace rooting

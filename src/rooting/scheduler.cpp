@@ -1,6 +1,7 @@
 #include "rooting/scheduler.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -14,14 +15,68 @@ bool inside(const lidar::Grid& grid, lidar::CellIndex cell) {
     return cell.x < grid.width() && cell.y < grid.height();
 }
 
-// For an axis-aligned segment, its bounding rectangle is the segment itself.
-// The distance to a cell rectangle can therefore be computed independently per axis.
-bool can_traverse(const lidar::Grid& grid, lidar::CellIndex from, lidar::CellIndex to, long double radius) {
-    const long double min_x = static_cast<long double>(std::min(from.x, to.x)) + 0.5L;
-    const long double max_x = static_cast<long double>(std::max(from.x, to.x)) + 0.5L;
-    const long double min_y = static_cast<long double>(std::min(from.y, to.y)) + 0.5L;
-    const long double max_y = static_cast<long double>(std::max(from.y, to.y)) + 0.5L;
+struct Point {
+    long double x;
+    long double y;
+};
 
+long double point_rectangle_distance(Point point, long double x, long double y) {
+    const auto dx = std::max({x - point.x, point.x - (x + 1.0L), 0.0L});
+    const auto dy = std::max({y - point.y, point.y - (y + 1.0L), 0.0L});
+    return std::hypot(dx, dy);
+}
+
+long double point_segment_distance(Point point, Point from, Point to) {
+    const long double dx = to.x - from.x;
+    const long double dy = to.y - from.y;
+    const long double length_squared = dx * dx + dy * dy;
+    if (length_squared == 0.0L)
+        return std::hypot(point.x - from.x, point.y - from.y);
+    const long double t = std::clamp(((point.x - from.x) * dx + (point.y - from.y) * dy) / length_squared, 0.0L, 1.0L);
+    return std::hypot(point.x - (from.x + t * dx), point.y - (from.y + t * dy));
+}
+
+bool intersects_rectangle(Point from, Point to, long double x, long double y) {
+    long double enter = 0.0L;
+    long double leave = 1.0L;
+    const auto clip_axis = [&](long double origin, long double delta, long double low, long double high) {
+        if (delta == 0.0L)
+            return origin >= low && origin <= high;
+        auto first = (low - origin) / delta;
+        auto last = (high - origin) / delta;
+        if (first > last)
+            std::swap(first, last);
+        enter = std::max(enter, first);
+        leave = std::min(leave, last);
+        return enter <= leave;
+    };
+    return clip_axis(from.x, to.x - from.x, x, x + 1.0L) && clip_axis(from.y, to.y - from.y, y, y + 1.0L);
+}
+
+long double segment_rectangle_distance(Point from, Point to, long double x, long double y) {
+    // Grid edges are axis-aligned. Keep their original exact rectangle-distance
+    // calculation, and use general segment geometry for the initial connector.
+    if (from.x == to.x || from.y == to.y) {
+        const auto dx = std::max({x - std::max(from.x, to.x), std::min(from.x, to.x) - (x + 1.0L), 0.0L});
+        const auto dy = std::max({y - std::max(from.y, to.y), std::min(from.y, to.y) - (y + 1.0L), 0.0L});
+        return std::hypot(dx, dy);
+    }
+    if (intersects_rectangle(from, to, x, y))
+        return 0.0L;
+    auto distance = std::min(point_rectangle_distance(from, x, y), point_rectangle_distance(to, x, y));
+    // For disjoint segments and rectangles, a minimum occurs at a segment
+    // endpoint or at the perpendicular projection of a rectangle corner.
+    const std::array<Point, 4> corners{{{x, y}, {x + 1.0L, y}, {x, y + 1.0L}, {x + 1.0L, y + 1.0L}}};
+    for (const auto corner : corners)
+        distance = std::min(distance, point_segment_distance(corner, from, to));
+    return distance;
+}
+
+bool clear_segment(const lidar::Grid& grid, Point from, Point to, long double radius) {
+    const long double min_x = std::min(from.x, to.x);
+    const long double max_x = std::max(from.x, to.x);
+    const long double min_y = std::min(from.y, to.y);
+    const long double max_y = std::max(from.y, to.y);
     if (min_x - radius <= 0.0L || min_y - radius <= 0.0L || max_x + radius >= static_cast<long double>(grid.width()) ||
         max_y + radius >= static_cast<long double>(grid.height()))
         return false;
@@ -31,19 +86,17 @@ bool can_traverse(const lidar::Grid& grid, lidar::CellIndex from, lidar::CellInd
     const auto bottom = static_cast<std::size_t>(std::floor(min_y - radius));
     const auto right = static_cast<std::size_t>(std::floor(max_x + radius));
     const auto top = static_cast<std::size_t>(std::floor(max_y + radius));
-    for (std::size_t y = bottom > 0 ? bottom - 1 : 0; y <= top; ++y) {
-        for (std::size_t x = left > 0 ? left - 1 : 0; x <= right; ++x) {
-            if (grid.at(x, y) == lidar::CellState::Free)
-                continue;
-            const long double cell_x = x;
-            const long double cell_y = y;
-            const auto dx = std::max({cell_x - max_x, min_x - (cell_x + 1.0L), 0.0L});
-            const auto dy = std::max({cell_y - max_y, min_y - (cell_y + 1.0L), 0.0L});
-            if (std::hypot(dx, dy) <= radius)
+    for (std::size_t y = bottom > 0 ? bottom - 1 : 0; y <= top; ++y)
+        for (std::size_t x = left > 0 ? left - 1 : 0; x <= right; ++x)
+            if (grid.at(x, y) != lidar::CellState::Free &&
+                segment_rectangle_distance(from, to, static_cast<long double>(x), static_cast<long double>(y)) <= radius)
                 return false;
-        }
-    }
     return true;
+}
+
+bool can_traverse(const lidar::Grid& grid, lidar::CellIndex from, lidar::CellIndex to, long double radius) {
+    return clear_segment(grid, {static_cast<long double>(from.x) + 0.5L, static_cast<long double>(from.y) + 0.5L},
+                         {static_cast<long double>(to.x) + 0.5L, static_cast<long double>(to.y) + 0.5L}, radius);
 }
 
 std::size_t heuristic(lidar::CellIndex cell, lidar::CellIndex goal) {
@@ -101,6 +154,20 @@ std::optional<lidar::CellIndex> forward_cell(Pose pose, const lidar::Grid& grid)
 }
 
 } // namespace
+
+bool Scheduler::can_move(const lidar::Grid& grid, double from_x, double from_y, double to_x, double to_y, double radius) const {
+    if (!std::isfinite(from_x) || !std::isfinite(from_y) || !std::isfinite(to_x) || !std::isfinite(to_y) ||
+        !std::isfinite(radius) || radius <= 0.0)
+        return false;
+    const long double resolution = grid.resolution();
+    const Point from{static_cast<long double>(from_x) / resolution, static_cast<long double>(from_y) / resolution};
+    const Point to{static_cast<long double>(to_x) / resolution, static_cast<long double>(to_y) / resolution};
+    const long double cell_radius = static_cast<long double>(radius) / resolution;
+    if (!std::isfinite(from.x) || !std::isfinite(from.y) || !std::isfinite(to.x) || !std::isfinite(to.y) ||
+        !std::isfinite(cell_radius) || cell_radius <= 0.0L)
+        return false;
+    return clear_segment(grid, from, to, cell_radius);
+}
 
 PlanResult Scheduler::plan(const lidar::Grid& grid, Pose start, lidar::CellIndex goal, double radius) const {
     if (!std::isfinite(radius) || radius <= 0.0)
