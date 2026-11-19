@@ -1,9 +1,11 @@
 #pragma once
 
+#include "io/stl_parser.hpp"
 #include "mapping/grid.hpp"
 
 #include <cstddef>
 #include <optional>
+#include <span>
 
 namespace lidar {
 
@@ -11,6 +13,12 @@ struct SensorPose {
     double x;   // Metres in the grid frame.
     double y;   // Metres in the grid frame.
     double yaw; // Radians counterclockwise from the grid's positive x-axis.
+};
+
+struct ScanUpdate {
+    std::size_t mapped = 0;
+    std::size_t skipped = 0;  // Valid zero-distance returns.
+    std::size_t rejected = 0; // Invalid measurements or endpoints outside the map.
 };
 
 class Lidar {
@@ -30,6 +38,13 @@ public:
     // Both sensor and hit must lie inside the grid. Returns false without changing
     // the map for invalid inputs or an out-of-bounds ray; no clipping is performed.
     bool update_measurement(const SensorPose& pose, double angle, double distance);
+
+    // Maps a scan at a known pose. Endpoints remain occupied regardless of ray order.
+    // A later scan can clear old obstacles. Zero returns are skipped, not cleared.
+    // Returns nullopt without changing the map for an invalid/outside sensor pose.
+    // Invalid measurements and outside endpoints are rejected individually; no clipping.
+    // Allocation failures may throw before the map is changed.
+    std::optional<ScanUpdate> update_scan(const SensorPose& pose, std::span<const io::Measurement> measurements);
 
     // Read-only access to the owned map without copying.
     const Grid& grid() const noexcept;

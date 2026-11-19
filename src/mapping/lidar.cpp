@@ -4,6 +4,7 @@
 #include <limits>
 #include <numbers>
 #include <utility>
+#include <vector>
 
 namespace lidar {
 
@@ -17,17 +18,62 @@ std::optional<Lidar> Lidar::Create(std::size_t width, std::size_t height, double
 
 Lidar::Lidar(Grid grid) : grid_(std::move(grid)) {}
 
-bool Lidar::update_measurement(const SensorPose& pose, double angle, double distance) {
+namespace {
+
+std::optional<std::pair<double, double>> measurement_hit(const SensorPose& pose, double angle, double distance) {
     if (!std::isfinite(pose.x) || !std::isfinite(pose.y) || !std::isfinite(pose.yaw) || !std::isfinite(angle) ||
         !std::isfinite(distance) || distance <= 0.0)
-        return false;
+        return std::nullopt;
 
     // Reduce each angle before addition to avoid overflow for large finite angles.
     constexpr double full_turn = 2.0 * std::numbers::pi;
     const double direction = std::remainder(pose.yaw, full_turn) + std::remainder(angle, full_turn);
-    const double hit_x = pose.x + distance * std::cos(direction);
-    const double hit_y = pose.y + distance * std::sin(direction);
-    return update_ray(pose.x, pose.y, hit_x, hit_y);
+    const double x = pose.x + distance * std::cos(direction);
+    const double y = pose.y + distance * std::sin(direction);
+    if (!std::isfinite(x) || !std::isfinite(y))
+        return std::nullopt;
+    return std::pair{x, y};
+}
+
+} // namespace
+
+bool Lidar::update_measurement(const SensorPose& pose, double angle, double distance) {
+    const auto hit = measurement_hit(pose, angle, distance);
+    return hit && update_ray(pose.x, pose.y, hit->first, hit->second);
+}
+
+std::optional<ScanUpdate> Lidar::update_scan(const SensorPose& pose, std::span<const io::Measurement> measurements) {
+    if (!std::isfinite(pose.yaw) || !grid_.world_to_cell(pose.x, pose.y))
+        return std::nullopt;
+
+    // Reserve before writing cells so allocation failure cannot leave a partial scan.
+    std::vector<CellIndex> endpoints;
+    endpoints.reserve(measurements.size());
+    ScanUpdate result;
+    for (const auto& point : measurements) {
+        if (!std::isfinite(point.angle) || !std::isfinite(point.distance) || point.distance < 0.0) {
+            ++result.rejected;
+            continue;
+        }
+        if (point.distance == 0.0) {
+            ++result.skipped;
+            continue;
+        }
+        const auto hit = measurement_hit(pose, point.angle, point.distance);
+        const auto cell = hit ? grid_.world_to_cell(hit->first, hit->second) : std::nullopt;
+        if (!cell) {
+            ++result.rejected;
+            continue;
+        }
+        update_ray(pose.x, pose.y, hit->first, hit->second);
+        endpoints.push_back(*cell);
+        ++result.mapped;
+    }
+    // A later ray can cross an earlier endpoint. Restore all hits after tracing
+    // so the final map of this scan does not depend on measurement order.
+    for (const auto cell : endpoints)
+        grid_.set(cell.x, cell.y, CellState::Occupied);
+    return result;
 }
 
 const Grid& Lidar::grid() const noexcept {
