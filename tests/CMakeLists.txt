@@ -12,7 +12,7 @@ FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
 
-foreach(object IN ITEMS grid ray_mapping measurement scheduler vacuum_cleaner scan_matcher)
+foreach(object IN ITEMS grid ray_mapping measurement scheduler vacuum_cleaner scan_matcher controller)
     add_executable(${object}_tests ${object}_tests.cpp)
     set_target_properties(${object}_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_link_libraries(${object}_tests PRIVATE lidar_lib GTest::gtest_main)
